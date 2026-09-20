@@ -1,0 +1,25 @@
+{
+  "name": "zhanshi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH plugin: show generated images and videos inline in the conversation.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-chat",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}
