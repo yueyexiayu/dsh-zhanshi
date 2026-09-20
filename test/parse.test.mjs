@@ -12,9 +12,11 @@ import {
   isUsablePath,
   itemsFromDeliverables,
   looksLikeSessionDump,
+  mediaFileUrl,
   mediaFromPresented,
   mediaFromToolCall,
   mediaKind,
+  mergeMediaItems,
   uniquePreviewItems,
 } from "../lib/parse.js";
 
@@ -246,6 +248,66 @@ test("cp destination still counts when stdout mentions the file", () => {
   assert.deepEqual(
     bashMediaPaths(JSON.stringify({ command: "cp in.bin /tmp/out.mp4" }), "copied /tmp/out.mp4"),
     ["/tmp/out.mp4"],
+  );
+});
+
+test("same path presented again keeps the later seq so the preview can refresh", () => {
+  let state = emptyTurnState(1);
+  state = applyTurnEvent(state, {
+    type: "deliverables/presented",
+    seq: 10,
+    data: { turn: 1, files: [{ path: "/tmp/app-icon.png" }] },
+  });
+  state = applyTurnEvent(state, {
+    type: "deliverables/presented",
+    seq: 20,
+    data: { turn: 1, files: [{ path: "/tmp/app-icon.png" }] },
+  });
+  assert.equal(state.items.length, 1);
+  assert.equal(state.items[0].path, "/tmp/app-icon.png");
+  assert.equal(state.items[0].seq, 20);
+});
+
+test("uniquePreviewItems keeps the later same-basename present, not the first copy", () => {
+  const items = uniquePreviewItems([
+    { path: "/Users/ning/.dsh/app-icon.png", source: "present", name: "app-icon.png", seq: 10 },
+    { path: "/Users/ning/Downloads/app-icon.png", source: "present", name: "app-icon.png", seq: 20 },
+  ]);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].path, "/Users/ning/Downloads/app-icon.png");
+  assert.equal(items[0].seq, 20);
+});
+
+test("itemsFromDeliverables keeps the later present of the same path", () => {
+  const items = itemsFromDeliverables({
+    presented: [
+      { path: "/tmp/app-icon.png", seq: 10 },
+      { path: "/tmp/app-icon.png", seq: 20 },
+    ],
+  });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].seq, 20);
+  assert.equal(items[0].source, "present");
+});
+
+test("mergeMediaItems keeps the higher seq for the same path", () => {
+  const items = mergeMediaItems(
+    [{ path: "/tmp/app-icon.png", source: "write", seq: 11, name: "app-icon.png" }],
+    [{ path: "/tmp/app-icon.png", source: "present", seq: 20, name: "app-icon.png" }],
+  );
+  assert.equal(items.length, 1);
+  assert.equal(items[0].source, "present");
+  assert.equal(items[0].seq, 20);
+});
+
+test("mediaFileUrl cache-busts with the event seq", () => {
+  assert.equal(
+    mediaFileUrl("/tmp/app-icon.png", "image", 20),
+    "/api/file?path=" + encodeURIComponent("/tmp/app-icon.png") + "&rev=20",
+  );
+  assert.equal(
+    mediaFileUrl("/tmp/clip.mp4", "video", 8),
+    "/api/zhanshi/file?path=" + encodeURIComponent("/tmp/clip.mp4") + "&rev=8",
   );
 });
 

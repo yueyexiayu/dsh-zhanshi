@@ -20,6 +20,7 @@ DeepSeek Harness 桌面插件。把本轮新保存的图片和视频直接显示
 - 不把媒体 ingest 成会话 attachment，避免进入下一轮视觉请求
 - 文件用相对路径 `/api/file` 读取（桌面是 `dsh-app://`，不能按 http origin 拼地址）
 - 每回合最多 16 个文件；忽略 `node_modules` / `.git`
+- 同一路径或同一文件名再生成时，预览跟最后一次 `present`/写入走，并用事件序号刷新图片地址，避免桌面端仍显示上一张
 - 卸载：只从 desktop patch 去掉该 insert，然后 ⌘Q
 
 ## 开发
