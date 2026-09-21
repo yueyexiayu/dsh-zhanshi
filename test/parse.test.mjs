@@ -107,6 +107,28 @@ test("failed writes contribute nothing", () => {
   assert.equal(state.items.length, 0);
 });
 
+test("shengcheng saved output is previewed", () => {
+  let state = emptyTurnState(1);
+  state = applyTurnEvent(state, {
+    type: "tool/call",
+    seq: 1,
+    data: { turn: 1, callId: "s", name: "shengcheng", arguments: "{}" },
+  });
+  state = applyTurnEvent(state, {
+    type: "tool/result",
+    seq: 2,
+    data: {
+      turn: 1,
+      message: {
+        source: { callId: "s" },
+        content: [{ type: "tool-result", isError: false, content: [{ type: "text", text: "saved /tmp/a.png\ngrok grok-imagine-image-2.0" }] }],
+      },
+    },
+  });
+  assert.deepEqual(state.items.map((item) => item.path), ["/tmp/a.png"]);
+  assert.equal(state.items[0].source, "shengcheng");
+});
+
 test("bash keeps saved stdout and command destinations, not a raw listing", () => {
   const args = JSON.stringify({ command: "python3 make.py > /tmp/unused.txt" });
   const stdout = [

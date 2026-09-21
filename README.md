@@ -2,7 +2,7 @@
 
 DeepSeek Harness 桌面插件。把本轮新保存的图片和视频直接显示在对话里，不写进模型上下文。
 
-预览挂在回合末尾交付区（和原来的「打开」卡片同一层，不会折进「N 次工具调用」）。图用 `<img>`，视频用 `<video controls>`，点图打开文件。来源是本轮成功的 `present` / `write` / `edit` / `read_image`，以及 bash 里独立一行的 `saved …png` / `wrote …mp4`（或 `cp`/`ffmpeg`/`-o` 的写入目标）。翻会话日志、`ls` 旧文件不会触发预览。`present` 的相对路径（如 `street_dancing_girl.png`）也会显示，用会话 cwd 拼成绝对路径。不负责生图。预览以 `id: zhanshi` 注册到 `conversation.chat.turnTail` 列表；没有媒体时组件返回空内容。
+预览挂在回合末尾交付区（和原来的「打开」卡片同一层，不会折进「N 次工具调用」）。图用 `<img>`，视频用 `<video controls>`，点图打开文件。来源是本轮成功的 `present` / `write` / `edit` / `read_image`，bash 里独立一行的 `saved …png` / `wrote …mp4`（或 `cp`/`ffmpeg`/`-o` 的写入目标），以及 `shengcheng` 结果里的 `saved …` 行。翻会话日志、`ls` 旧文件不会触发预览。`present` 的相对路径（如 `street_dancing_girl.png`）也会显示，用会话 cwd 拼成绝对路径。不负责生图。预览以 `id: zhanshi` 注册到 `conversation.chat.turnTail` 列表；没有媒体时组件返回空内容。
 
 ## 安装
 
