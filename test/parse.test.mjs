@@ -107,6 +107,28 @@ test("failed writes contribute nothing", () => {
   assert.equal(state.items.length, 0);
 });
 
+test("chrome screenshot saved output is previewed", () => {
+  let state = emptyTurnState(1);
+  state = applyTurnEvent(state, {
+    type: "tool/call",
+    seq: 1,
+    data: { turn: 1, callId: "c", name: "chrome_screenshot", arguments: "{}" },
+  });
+  state = applyTurnEvent(state, {
+    type: "tool/result",
+    seq: 2,
+    data: {
+      turn: 1,
+      message: {
+        source: { callId: "c" },
+        content: [{ type: "tool-result", isError: false, content: [{ type: "text", text: "saved /tmp/chrome-page.png\nbytes: 12" }] }],
+      },
+    },
+  });
+  assert.deepEqual(state.items.map((item) => item.path), ["/tmp/chrome-page.png"]);
+  assert.equal(state.items[0].source, "chrome_screenshot");
+});
+
 test("shengcheng saved output is previewed", () => {
   let state = emptyTurnState(1);
   state = applyTurnEvent(state, {
