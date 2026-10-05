@@ -64,7 +64,8 @@ test("present and write calls collect media after success", () => {
       turn: 3,
       message: {
         source: { callId: "w1" },
-        content: [{ type: "tool-result", isError: false, content: [{ type: "text", text: "ok" }] }],
+        isError: false,
+        content: [{ type: "text", text: "ok" }],
       },
     },
   });
@@ -100,7 +101,8 @@ test("failed writes contribute nothing", () => {
       turn: 1,
       message: {
         source: { callId: "w" },
-        content: [{ type: "tool-result", isError: true, content: [{ type: "text", text: "no" }] }],
+        isError: true,
+        content: [{ type: "text", text: "no" }],
       },
     },
   });
@@ -121,7 +123,8 @@ test("chrome screenshot saved output is previewed", () => {
       turn: 1,
       message: {
         source: { callId: "c" },
-        content: [{ type: "tool-result", isError: false, content: [{ type: "text", text: "saved /tmp/chrome-page.png\nbytes: 12" }] }],
+        isError: false,
+        content: [{ type: "text", text: "saved /tmp/chrome-page.png\nbytes: 12" }],
       },
     },
   });
@@ -143,7 +146,8 @@ test("shengcheng saved output is previewed", () => {
       turn: 1,
       message: {
         source: { callId: "s" },
-        content: [{ type: "tool-result", isError: false, content: [{ type: "text", text: "saved /tmp/a.png\ngrok grok-imagine-image-2.0" }] }],
+        isError: false,
+        content: [{ type: "text", text: "saved /tmp/a.png\ngrok grok-imagine-image-2.0" }],
       },
     },
   });
@@ -234,11 +238,8 @@ test("bash saved line from the dancing-girl session is collected", () => {
       turn: 1,
       message: {
         source: { callId: "b" },
-        content: [{
-          type: "tool-result",
-          isError: false,
-          content: [{ type: "text", text: "saved /Users/ning/Downloads/girl-dancing-street-20260919-201510.png\nbytes 6620783" }],
-        }],
+        isError: false,
+        content: [{ type: "text", text: "saved /Users/ning/Downloads/girl-dancing-street-20260919-201510.png\nbytes 6620783" }],
       },
     },
   });
