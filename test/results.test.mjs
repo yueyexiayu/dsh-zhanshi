@@ -92,3 +92,53 @@ test("client gallery remains empty after failed collection", () => {
   const state = replay(reducers.client, events("write", calls[0][1], true));
   assert.equal(Gallery({ turn: { data: { zhanshi: state } } }), null);
 });
+
+function galleryMedia(node, out = []) {
+  if (Array.isArray(node)) {
+    for (const child of node) galleryMedia(child, out);
+  } else if (node && typeof node === "object") {
+    if (node.type === "img" || node.type === "video") out.push({ type: node.type, src: node.props.src });
+    galleryMedia(node.children, out);
+  }
+  return out;
+}
+
+for (const [name, image, video, presentVideo] of [
+  ["same-stem generated", "/tmp/output.jpg", "/tmp/output.mp4", false],
+  ["different-stem generated", "/tmp/image.jpg", "/tmp/movie.mp4", false],
+  ["generated image beside presented video", "/tmp/image.jpg", "/tmp/movie.mp4", true],
+]) {
+  test(`client gallery renders image and video together: ${name}`, () => {
+    const inputs = [image, video].flatMap((path, index) => events("shengcheng", {}, false, `saved ${path}`)
+      .map(event => ({ ...event, seq: index * 2 + event.seq })));
+    if (presentVideo) inputs.push({ type: "deliverables/presented", seq: 5,
+      data: { turn: 1, files: [{ path: video }] } });
+    const state = replay(reducers.client, inputs);
+    const media = galleryMedia(Gallery({ turn: { data: { zhanshi: state } } }));
+    assert.deepEqual(media.map(item => item.type), ["img", "video"]);
+    assert.deepEqual(media.map(item => new URL(item.src, "https://fixture.invalid").searchParams.get("path")), [image, video]);
+  });
+}
+
+test("client gallery keeps equal basenames in separate directories", () => {
+  const rendered = Gallery({ turn: { data: { zhanshi: { items: [
+    { path: "/tmp/first/output.jpg", kind: "image", source: "present", seq: 2 },
+    { path: "/tmp/second/output.jpg", kind: "image", source: "shengcheng", seq: 4 },
+  ] } } } });
+  const media = galleryMedia(rendered);
+  assert.deepEqual(media.map(item => new URL(item.src, "https://fixture.invalid").searchParams.get("path")),
+    ["/tmp/first/output.jpg", "/tmp/second/output.jpg"]);
+});
+
+test("client gallery merges official present with local latest seq without hiding other media", () => {
+  const rendered = Gallery({ turn: { data: {
+    zhanshi: { items: [
+      { path: "/tmp/output.jpg", kind: "image", source: "shengcheng", seq: 6 },
+      { path: "/tmp/clip.mp4", kind: "video", source: "shengcheng", seq: 5 },
+    ] },
+    deliverables: { presented: [{ path: "/tmp/output.jpg", seq: 2 }] },
+  } } });
+  const media = galleryMedia(rendered);
+  assert.deepEqual(media.map(item => item.type), ["img", "video"]);
+  assert.equal(new URL(media[0].src, "https://fixture.invalid").searchParams.get("rev"), "6");
+});

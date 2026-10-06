@@ -257,14 +257,16 @@ test("ls globs are not media paths", () => {
   );
 });
 
-test("uniquePreviewItems keeps one present file and drops backups", () => {
+test("uniquePreviewItems retains distinct full paths beside a presented file", () => {
   const items = uniquePreviewItems([
     { path: "/Users/ning/.dsh/street*.png", source: "bash", name: "street*.png" },
     { path: "/Users/ning/.dsh/european-girl-street-dance.png", source: "present", name: "european-girl-street-dance.png" },
     { path: "/Users/ning/Downloads/european-girl-street-dance.png", source: "bash", name: "european-girl-street-dance.png" },
   ]);
-  assert.equal(items.length, 1);
-  assert.equal(items[0].path, "/Users/ning/.dsh/european-girl-street-dance.png");
+  assert.deepEqual(items.map(item => item.path), [
+    "/Users/ning/.dsh/european-girl-street-dance.png",
+    "/Users/ning/Downloads/european-girl-street-dance.png",
+  ]);
 });
 
 test("bash ignores saved paths quoted inside a session log dump", () => {
@@ -313,14 +315,15 @@ test("same path presented again keeps the later seq so the preview can refresh",
   assert.equal(state.items[0].seq, 20);
 });
 
-test("uniquePreviewItems keeps the later same-basename present, not the first copy", () => {
+test("uniquePreviewItems keeps same basenames from different directories", () => {
   const items = uniquePreviewItems([
     { path: "/Users/ning/.dsh/app-icon.png", source: "present", name: "app-icon.png", seq: 10 },
     { path: "/Users/ning/Downloads/app-icon.png", source: "present", name: "app-icon.png", seq: 20 },
   ]);
-  assert.equal(items.length, 1);
-  assert.equal(items[0].path, "/Users/ning/Downloads/app-icon.png");
-  assert.equal(items[0].seq, 20);
+  assert.deepEqual(items.map(item => [item.path, item.seq]), [
+    ["/Users/ning/.dsh/app-icon.png", 10],
+    ["/Users/ning/Downloads/app-icon.png", 20],
+  ]);
 });
 
 test("itemsFromDeliverables keeps the later present of the same path", () => {
@@ -356,13 +359,21 @@ test("mediaFileUrl cache-busts with the event seq", () => {
   );
 });
 
-test("present mp4 wins over same-stem png so the gallery shows video", () => {
+test("present mp4 and same-stem png remain separate media files", () => {
   const items = uniquePreviewItems([
     { path: "/Users/ning/.dsh/european-girl-street-dance.png", source: "bash", name: "european-girl-street-dance.png" },
     { path: "/Users/ning/.dsh/european-girl-street-dance.mp4", source: "present", name: "european-girl-street-dance.mp4" },
     { path: "/Users/ning/Downloads/european-girl-street-dance.mp4", source: "bash", name: "european-girl-street-dance.mp4" },
   ]);
-  assert.equal(items.length, 1);
-  assert.equal(items[0].path, "/Users/ning/.dsh/european-girl-street-dance.mp4");
-  assert.equal(mediaKind(items[0].path), "video");
+  assert.deepEqual(items.map(item => mediaKind(item.path)), ["image", "video", "video"]);
+});
+
+test("uniquePreviewItems uses newest seq for the same path regardless of source", () => {
+  const path = "/tmp/output.jpg";
+  const items = uniquePreviewItems([
+    { path, source: "present", seq: 2 },
+    { path, source: "shengcheng", seq: 6 },
+    { path, source: "present", seq: 4 },
+  ]);
+  assert.deepEqual(items, [{ path, source: "shengcheng", seq: 6 }]);
 });
