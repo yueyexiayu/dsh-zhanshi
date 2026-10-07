@@ -83,6 +83,43 @@ for (const [surface, reducer] of Object.entries(reducers)) {
   });
 }
 
+for (const [surface, reducer] of Object.entries(reducers)) {
+  const path = '/tmp/图 像.png folder/引号"与\'emoji🎨.png';
+  const structured = `shengcheng_result ${JSON.stringify({ path })}`;
+  test(`${surface}: structured path preserves spaces, quotes and Unicode without legacy truncation`, () => {
+    const state = replay(reducer, events("shengcheng", {}, false, `${structured}\nsaved ${path}\nprovider metadata`));
+    assert.deepEqual(Array.from(state.items, item => item.path), [path]);
+  });
+  test(`${surface}: structured duplicate paths are deduplicated`, () => {
+    assert.equal(replay(reducer, events("shengcheng", {}, false, `${structured}\n${structured}`)).items.length, 1);
+  });
+  for (const value of [null, [], {}, { path: 1 }, { path: "relative.png" }, { path: "//server/a.png" },
+    { path: "/tmp/../a.png" }, { path: "/tmp/node_modules/a.png" }, { path: "/tmp/a.png.exe" },
+    { path: "/tmp/a\n.png" }, { path: "/tmp/a\u0000.png" }, { path: " /tmp/a.png" }]) {
+    test(`${surface}: rejects invalid structured record ${JSON.stringify(value)}`, () => {
+      const text = `shengcheng_result ${JSON.stringify(value)}\nsaved /tmp/fallback.png`;
+      assert.equal(replay(reducer, events("shengcheng", {}, false, text)).items.length, 0);
+    });
+  }
+  for (const text of [
+    'shengcheng_result {broken}\nsaved /tmp/fallback.png',
+    'shengcheng_result {"path":"/tmp/a.png"} trailing',
+    JSON.stringify({ type: "tool/result", text: structured }),
+    `{"type": "tool/result"}\n${structured}\nsaved /tmp/fallback.png`,
+    `quoted example: ${structured}`,
+  ]) {
+    test(`${surface}: rejects malformed, quoted and dumped protocol ${text}`, () => {
+      assert.equal(replay(reducer, events("shengcheng", {}, false, text)).items.length, 0);
+    });
+  }
+  test(`${surface}: structured success text cannot override failed event status`, () => {
+    for (const isError of [true, undefined]) {
+      assert.equal(replay(reducer, events("shengcheng", {}, isError, structured)).items.length, 0);
+    }
+    assert.equal(replay(reducer, events("shengcheng", {}, false, structured, { error: { code: "IO_ERROR" } })).items.length, 0);
+  });
+}
+
 test("gallery retains trusted official deliverables with no local match", () => {
   const rendered = Gallery({ turn: { data: { deliverables: { produced: [{ path: "/tmp/official.png", seq: 3 }] } } } });
   assert.equal(rendered.props["data-zhanshi"], "media");
