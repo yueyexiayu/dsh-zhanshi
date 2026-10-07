@@ -1,25 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  applyTurnEvent,
-  bashMediaPaths,
-  emptyTurnState,
-  extractMediaPaths,
-  extractSavedMediaPaths,
-  extractWriteDestinations,
-  galleryAnchorSeq,
-  isMediaPath,
-  isUsablePath,
-  itemsFromDeliverables,
-  looksLikeSessionDump,
-  mediaFileUrl,
-  mediaFromPresented,
-  mediaFromToolCall,
-  mediaKind,
-  mergeMediaItems,
-  uniquePreviewItems,
+  applyTurnEvent, bashMediaPaths, emptyTurnState, extractSavedMediaPaths,
+  extractWriteDestinations, isMediaPath, isUsablePath, looksLikeSessionDump,
+  mediaFromPresented, mediaFromToolCall, mediaKind,
 } from "../lib/parse.js";
 
+// Gallery selection, URL revisions and rendering are covered against the shipped
+// Client in results.test.mjs, not parallel test-only preview implementations.
 test("mediaKind maps image and video extensions", () => {
   assert.equal(mediaKind("/tmp/a.PNG"), "image");
   assert.equal(mediaKind("/tmp/a.jpeg"), "image");
@@ -27,353 +15,58 @@ test("mediaKind maps image and video extensions", () => {
   assert.equal(mediaKind("/tmp/notes.txt"), null);
 });
 
-test("extractSavedMediaPaths only takes save-style lines", () => {
-  const text = [
-    "saved /Users/ning/Downloads/macos-yaso-app-icon-1.png size=12",
-    "ls /Users/ning/Downloads/old.png",
-    "写入 /tmp/out.webm",
-  ].join("\n");
-  assert.deepEqual(extractSavedMediaPaths(text), [
-    "/Users/ning/Downloads/macos-yaso-app-icon-1.png",
-    "/tmp/out.webm",
-  ]);
+test("extractSavedMediaPaths only takes save-style lines and documented size metadata", () => {
+  const text = "saved /tmp/icon-1.png size=12\nls /tmp/old.png\n写入 /tmp/out.webm";
+  assert.deepEqual(extractSavedMediaPaths(text), ["/tmp/icon-1.png", "/tmp/out.webm"]);
+  assert.deepEqual(extractSavedMediaPaths("saved '/tmp/new photo.png' size=12"), ["/tmp/new photo.png"]);
 });
 
-test("extractMediaPaths finds absolute media paths", () => {
-  assert.deepEqual(extractMediaPaths('out="/tmp/icon.png" done'), ["/tmp/icon.png"]);
-  assert.equal(extractMediaPaths("https://cdn.example/a.png").length, 0);
-  assert.equal(extractMediaPaths("/tmp/node_modules/x.png").length, 0);
+test("media path rules reject unsupported paths without truncating names", () => {
+  for (const path of ["https://cdn.example/a.png", "/tmp/node_modules/x.png", "/tmp/.git/a.png", "/tmp/../a.png", "/tmp/a.png.backup", "/tmp/a\n.png", "//server/a.png", "/tmp/street*.png"]) {
+    assert.equal(isMediaPath(path), false, path);
+  }
+  assert.equal(isMediaPath("street_dancing_girl.png"), true);
+  assert.equal(isUsablePath("street_dancing_girl.png"), false);
+  assert.equal(isUsablePath("/tmp/new photo.png"), true);
 });
 
-test("present and write calls collect media after success", () => {
-  let state = emptyTurnState(3);
-  state = applyTurnEvent(state, {
-    type: "tool/call",
-    seq: 10,
-    data: {
-      turn: 3,
-      callId: "w1",
-      name: "write",
-      arguments: JSON.stringify({ file_path: "/tmp/icon.png", content: "x" }),
-    },
-  });
-  state = applyTurnEvent(state, {
-    type: "tool/result",
-    seq: 11,
-    data: {
-      turn: 3,
-      message: {
-        source: { callId: "w1" },
-        isError: false,
-        content: [{ type: "text", text: "ok" }],
-      },
-    },
-  });
-  state = applyTurnEvent(state, {
-    type: "deliverables/presented",
-    seq: 12,
-    data: {
-      turn: 3,
-      files: [
-        { path: "/Users/ning/Downloads/macos-yaso-app-icon-2.png", description: "推荐" },
-        { path: "/tmp/notes.md" },
-      ],
-    },
-  });
-  assert.deepEqual(state.items.map((item) => item.path), [
-    "/tmp/icon.png",
-    "/Users/ning/Downloads/macos-yaso-app-icon-2.png",
-  ]);
-  assert.equal(state.items[1].kind, "image");
-});
-
-test("failed writes contribute nothing", () => {
-  let state = emptyTurnState(1);
-  state = applyTurnEvent(state, {
-    type: "tool/call",
-    seq: 1,
-    data: { turn: 1, callId: "w", name: "write", arguments: JSON.stringify({ file_path: "/tmp/a.png", content: "x" }) },
-  });
-  state = applyTurnEvent(state, {
-    type: "tool/result",
-    seq: 2,
-    data: {
-      turn: 1,
-      message: {
-        source: { callId: "w" },
-        isError: true,
-        content: [{ type: "text", text: "no" }],
-      },
-    },
-  });
-  assert.equal(state.items.length, 0);
-});
-
-test("chrome screenshot saved output is previewed", () => {
-  let state = emptyTurnState(1);
-  state = applyTurnEvent(state, {
-    type: "tool/call",
-    seq: 1,
-    data: { turn: 1, callId: "c", name: "chrome_screenshot", arguments: "{}" },
-  });
-  state = applyTurnEvent(state, {
-    type: "tool/result",
-    seq: 2,
-    data: {
-      turn: 1,
-      message: {
-        source: { callId: "c" },
-        isError: false,
-        content: [{ type: "text", text: "saved /tmp/chrome-page.png\nbytes: 12" }],
-      },
-    },
-  });
-  assert.deepEqual(state.items.map((item) => item.path), ["/tmp/chrome-page.png"]);
-  assert.equal(state.items[0].source, "chrome_screenshot");
-});
-
-test("shengcheng saved output is previewed", () => {
-  let state = emptyTurnState(1);
-  state = applyTurnEvent(state, {
-    type: "tool/call",
-    seq: 1,
-    data: { turn: 1, callId: "s", name: "shengcheng", arguments: "{}" },
-  });
-  state = applyTurnEvent(state, {
-    type: "tool/result",
-    seq: 2,
-    data: {
-      turn: 1,
-      message: {
-        source: { callId: "s" },
-        isError: false,
-        content: [{ type: "text", text: "saved /tmp/a.png\ngrok grok-imagine-image-2.0" }],
-      },
-    },
-  });
-  assert.deepEqual(state.items.map((item) => item.path), ["/tmp/a.png"]);
-  assert.equal(state.items[0].source, "shengcheng");
+test("mediaFromToolCall and present helpers keep media including relative paths", () => {
+  assert.deepEqual(mediaFromToolCall("present", JSON.stringify({ files: [{ path: "a.png" }, { path: "/tmp/a.txt" }] })), ["a.png"]);
+  assert.deepEqual(mediaFromPresented({ data: { files: [{ path: "/tmp/clip.webm" }] } }), ["/tmp/clip.webm"]);
 });
 
 test("bash keeps saved stdout and command destinations, not a raw listing", () => {
   const args = JSON.stringify({ command: "python3 make.py > /tmp/unused.txt" });
-  const stdout = [
-    "listing /Users/ning/Pictures/vacation.png",
-    "saved /Users/ning/Downloads/macos-yaso-app-icon-2.png",
-  ].join("\n");
-  assert.deepEqual(bashMediaPaths(args, stdout), [
-    "/Users/ning/Downloads/macos-yaso-app-icon-2.png",
-  ]);
-});
-
-test("bash keeps a media path that also appears in the command", () => {
-  const args = JSON.stringify({ command: "cp in.bin /tmp/out.mp4" });
-  assert.deepEqual(bashMediaPaths(args, "wrote /tmp/out.mp4"), ["/tmp/out.mp4"]);
-});
-
-test("gallery sits just after the last text assistant", () => {
-  const state = {
-    items: [{ path: "/tmp/a.png", seq: 10, kind: "image", source: "present", name: "a.png" }],
-  };
-  const matches = [
-    { event: { type: "deliverables/presented", seq: 10, data: {} } },
-    {
-      event: {
-        type: "assistant/message",
-        seq: 20,
-        data: { message: { content: [{ type: "text", text: "好了" }] } },
-      },
-    },
-  ];
-  assert.equal(galleryAnchorSeq(state, matches), 20.02);
-});
-
-test("mediaFromToolCall and present helpers", () => {
-  assert.deepEqual(
-    mediaFromToolCall("present", JSON.stringify({ files: [{ path: "/tmp/a.png" }, { path: "/tmp/a.txt" }] })),
-    ["/tmp/a.png"],
-  );
-  assert.deepEqual(
-    mediaFromPresented({ data: { files: [{ path: "/tmp/clip.webm" }] } }),
-    ["/tmp/clip.webm"],
-  );
-});
-
-test("relative present paths used by GPT sessions are media, not bash-usable", () => {
-  assert.equal(isMediaPath("street_dancing_girl.png"), true);
-  assert.equal(isUsablePath("street_dancing_girl.png"), false);
-  assert.equal(isMediaPath("/Users/ning/.dsh/street_dancing_girl.png"), true);
-  assert.deepEqual(
-    mediaFromToolCall("present", JSON.stringify({ files: [{ path: "street_dancing_girl.png" }] })),
-    ["street_dancing_girl.png"],
-  );
-});
-
-test("itemsFromDeliverables keeps presented pngs used by the turn-tail slot", () => {
-  const items = itemsFromDeliverables({
-    presented: [{ path: "/Users/ning/Downloads/girl-dancing-street-20260919-201510.png", seq: 117 }],
-    produced: [{ path: "/tmp/notes.md", seq: 10 }],
-  });
-  assert.equal(items.length, 1);
-  assert.equal(items[0].kind, "image");
-  assert.equal(items[0].name, "girl-dancing-street-20260919-201510.png");
-  const relative = itemsFromDeliverables({
-    presented: [{ path: "street_dancing_girl.png", seq: 54 }],
-  });
-  assert.equal(relative.length, 1);
-  assert.equal(relative[0].path, "street_dancing_girl.png");
-});
-
-test("bash saved line from the dancing-girl session is collected", () => {
-  let state = emptyTurnState(1);
-  state = applyTurnEvent(state, {
-    type: "tool/call",
-    seq: 106,
-    data: { turn: 1, callId: "b", name: "bash", arguments: JSON.stringify({ command: "python3 gen.py" }) },
-  });
-  state = applyTurnEvent(state, {
-    type: "tool/result",
-    seq: 107,
-    data: {
-      turn: 1,
-      message: {
-        source: { callId: "b" },
-        isError: false,
-        content: [{ type: "text", text: "saved /Users/ning/Downloads/girl-dancing-street-20260919-201510.png\nbytes 6620783" }],
-      },
-    },
-  });
-  assert.equal(state.items[0].path, "/Users/ning/Downloads/girl-dancing-street-20260919-201510.png");
-});
-
-test("ls globs are not media paths", () => {
-  assert.equal(isMediaPath("/Users/ning/.dsh/street*.png"), false);
-  assert.equal(
-    bashMediaPaths(
-      JSON.stringify({ command: "ls -la /Users/ning/.dsh/street*.png" }),
-      "",
-    ).length,
-    0,
-  );
-});
-
-test("uniquePreviewItems retains distinct full paths beside a presented file", () => {
-  const items = uniquePreviewItems([
-    { path: "/Users/ning/.dsh/street*.png", source: "bash", name: "street*.png" },
-    { path: "/Users/ning/.dsh/european-girl-street-dance.png", source: "present", name: "european-girl-street-dance.png" },
-    { path: "/Users/ning/Downloads/european-girl-street-dance.png", source: "bash", name: "european-girl-street-dance.png" },
-  ]);
-  assert.deepEqual(items.map(item => item.path), [
-    "/Users/ning/.dsh/european-girl-street-dance.png",
-    "/Users/ning/Downloads/european-girl-street-dance.png",
-  ]);
+  assert.deepEqual(bashMediaPaths(args, "listing /tmp/vacation.png\nsaved /tmp/final.png"), ["/tmp/final.png"]);
+  assert.deepEqual(extractWriteDestinations("cp in.bin /tmp/out.mp4"), ["/tmp/out.mp4"]);
+  assert.deepEqual(bashMediaPaths(JSON.stringify({ command: "cp in.bin /tmp/out.mp4" }), "copied /tmp/out.mp4"), ["/tmp/out.mp4"]);
 });
 
 test("bash ignores saved paths quoted inside a session log dump", () => {
-  const args = JSON.stringify({
-    command: "cd ~/.dsh/sessions && python3 - <<'EOF'\nimport zstandard, json\nprint(txt)\nEOF",
-  });
-  const stdout = [
-    '{"type":"tool/result","seq":95,"data":{"turn":1,"message":{"content":[{"type":"text","text":"saved /Users/ning/.dsh/european-girl-street-dance.png\\nsaved /Users/ning/Downloads/european-girl-street-dance.png"}]}}}',
-    '{"type":"assistant/message","seq":96,"data":{}}',
-  ].join("\n");
+  const stdout = '{"type":"tool/result","text":"saved /tmp/old.png"}\n{"type":"assistant/message","data":{}}';
   assert.equal(looksLikeSessionDump(stdout), true);
-  assert.equal(bashMediaPaths(args, stdout).length, 0);
+  assert.equal(bashMediaPaths('{}', stdout).length, 0);
   assert.equal(extractSavedMediaPaths(stdout).length, 0);
 });
 
 test("ls of an old png is not treated as this-turn media", () => {
-  const path = "/Users/ning/.dsh/european-girl-street-dance.png";
-  const args = JSON.stringify({ command: "ls -la " + path });
-  const stdout = "-rw-r--r--  1 ning  staff  6141874 Sep 20 11:44 " + path;
-  assert.equal(bashMediaPaths(args, stdout).length, 0);
-  assert.equal(extractWriteDestinations("ls -la " + path).length, 0);
+  assert.deepEqual(bashMediaPaths(JSON.stringify({ command: "ls -la /tmp/old.png" }), "-rw-r--r-- old /tmp/old.png"), []);
+  assert.deepEqual(extractWriteDestinations("ls -la /tmp/old.png"), []);
 });
 
-test("cp destination still counts when stdout mentions the file", () => {
-  assert.deepEqual(extractWriteDestinations("cp in.bin /tmp/out.mp4"), ["/tmp/out.mp4"]);
-  assert.deepEqual(
-    bashMediaPaths(JSON.stringify({ command: "cp in.bin /tmp/out.mp4" }), "copied /tmp/out.mp4"),
-    ["/tmp/out.mp4"],
-  );
+test("literal destinations support quotes and redirection but not expansion or compounds", () => {
+  assert.deepEqual(extractWriteDestinations("cp '/tmp/a.png' '/tmp/new photo.png'"), ["/tmp/new photo.png"]);
+  assert.deepEqual(extractWriteDestinations("echo test > '/tmp/new photo.png'"), ["/tmp/new photo.png"]);
+  for (const command of ["cp /tmp/a.png /tmp/new.png; ls /tmp/old.png", "cp /tmp/a.png /tmp/new.png && ls /tmp/old.png", "cp /tmp/a.png $(echo /tmp/old.png)", "cp /tmp/a.png /tmp/old.png.backup", "cp -t /tmp/directory /tmp/old.png", "echo '>/tmp/old.png'"]) {
+    assert.deepEqual(extractWriteDestinations(command), [], command);
+  }
 });
 
-test("same path presented again keeps the later seq so the preview can refresh", () => {
+test("same path presented again keeps latest seq and explicit priority", () => {
   let state = emptyTurnState(1);
-  state = applyTurnEvent(state, {
-    type: "deliverables/presented",
-    seq: 10,
-    data: { turn: 1, files: [{ path: "/tmp/app-icon.png" }] },
-  });
-  state = applyTurnEvent(state, {
-    type: "deliverables/presented",
-    seq: 20,
-    data: { turn: 1, files: [{ path: "/tmp/app-icon.png" }] },
-  });
+  for (const seq of [10, 20, 12]) state = applyTurnEvent(state, { type: "deliverables/presented", seq, data: { turn: 1, files: [{ path: "/tmp/app-icon.png" }] } });
   assert.equal(state.items.length, 1);
   assert.equal(state.items[0].path, "/tmp/app-icon.png");
   assert.equal(state.items[0].seq, 20);
-});
-
-test("uniquePreviewItems keeps same basenames from different directories", () => {
-  const items = uniquePreviewItems([
-    { path: "/Users/ning/.dsh/app-icon.png", source: "present", name: "app-icon.png", seq: 10 },
-    { path: "/Users/ning/Downloads/app-icon.png", source: "present", name: "app-icon.png", seq: 20 },
-  ]);
-  assert.deepEqual(items.map(item => [item.path, item.seq]), [
-    ["/Users/ning/.dsh/app-icon.png", 10],
-    ["/Users/ning/Downloads/app-icon.png", 20],
-  ]);
-});
-
-test("itemsFromDeliverables keeps the later present of the same path", () => {
-  const items = itemsFromDeliverables({
-    presented: [
-      { path: "/tmp/app-icon.png", seq: 10 },
-      { path: "/tmp/app-icon.png", seq: 20 },
-    ],
-  });
-  assert.equal(items.length, 1);
-  assert.equal(items[0].seq, 20);
-  assert.equal(items[0].source, "present");
-});
-
-test("mergeMediaItems keeps the higher seq for the same path", () => {
-  const items = mergeMediaItems(
-    [{ path: "/tmp/app-icon.png", source: "write", seq: 11, name: "app-icon.png" }],
-    [{ path: "/tmp/app-icon.png", source: "present", seq: 20, name: "app-icon.png" }],
-  );
-  assert.equal(items.length, 1);
-  assert.equal(items[0].source, "present");
-  assert.equal(items[0].seq, 20);
-});
-
-test("mediaFileUrl cache-busts with the event seq", () => {
-  assert.equal(
-    mediaFileUrl("/tmp/app-icon.png", "image", 20),
-    "/api/file?path=" + encodeURIComponent("/tmp/app-icon.png") + "&rev=20",
-  );
-  assert.equal(
-    mediaFileUrl("/tmp/clip.mp4", "video", 8),
-    "/api/zhanshi/file?path=" + encodeURIComponent("/tmp/clip.mp4") + "&rev=8",
-  );
-});
-
-test("present mp4 and same-stem png remain separate media files", () => {
-  const items = uniquePreviewItems([
-    { path: "/Users/ning/.dsh/european-girl-street-dance.png", source: "bash", name: "european-girl-street-dance.png" },
-    { path: "/Users/ning/.dsh/european-girl-street-dance.mp4", source: "present", name: "european-girl-street-dance.mp4" },
-    { path: "/Users/ning/Downloads/european-girl-street-dance.mp4", source: "bash", name: "european-girl-street-dance.mp4" },
-  ]);
-  assert.deepEqual(items.map(item => mediaKind(item.path)), ["image", "video", "video"]);
-});
-
-test("uniquePreviewItems uses newest seq for the same path regardless of source", () => {
-  const path = "/tmp/output.jpg";
-  const items = uniquePreviewItems([
-    { path, source: "present", seq: 2 },
-    { path, source: "shengcheng", seq: 6 },
-    { path, source: "present", seq: 4 },
-  ]);
-  assert.deepEqual(items, [{ path, source: "shengcheng", seq: 6 }]);
+  assert.equal(state.items[0].presented, true);
 });

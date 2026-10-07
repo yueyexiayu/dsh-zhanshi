@@ -1,6 +1,6 @@
 {
   "name": "zhanshi",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "DSH plugin: show generated images and videos inline in the conversation.",
   "type": "module",

@@ -5,11 +5,20 @@ import { runInNewContext } from "node:vm";
 import { applyTurnEvent, emptyTurnState } from "../lib/parse.js";
 
 // Exercise the shipped browser reducer, not a copy of its implementation.
+const hookValues = [];
+let hookIndex = 0;
+const fakeReact = {
+  createElement(type, props, ...children) {
+    if (typeof type === "function") { hookIndex = 0; return type(props); }
+    return { type, props, children };
+  },
+  useState(initial) { const index = hookIndex++; if (!(index in hookValues)) hookValues[index] = initial; return [hookValues[index], value => { hookValues[index] = value; }]; },
+};
 let definition;
 let Gallery;
 runInNewContext(readFileSync(new URL("../lib/client.js", import.meta.url), "utf8"), {
   window: { __ModuleLoader__: { load(bundle) {
-    bundle.factory(() => ({ createElement: (type, props, ...children) => ({ type, props, children }) })).apply({
+    bundle.factory(() => fakeReact).apply({
       uiConversation: { events: { register(value) { definition = value; } } },
       slots: { inject(_name, apply) { apply(); }, register(_options, component) { Gallery = component; } },
     });
@@ -119,6 +128,126 @@ for (const [surface, reducer] of Object.entries(reducers)) {
     assert.equal(replay(reducer, events("shengcheng", {}, false, structured, { error: { code: "IO_ERROR" } })).items.length, 0);
   });
 }
+
+for (const [surface, reducer] of Object.entries(reducers)) {
+  test(`${surface}: legacy saved paths preserve spaces and never truncate extensions`, () => {
+    assert.equal(replay(reducer, events("shengcheng", {}, false, "saved /tmp/new photo.png")).items[0]?.path, "/tmp/new photo.png");
+    for (const path of ["/tmp/a.png.backup", "/tmp/a.png-more", "/tmp/a.png/child.txt"]) {
+      assert.equal(replay(reducer, events("shengcheng", {}, false, `saved ${path}`)).items.length, 0);
+    }
+  });
+  test(`${surface}: compound shell does not infer an unrelated ls target`, () => {
+    const state = replay(reducer, events("bash", { command: "cp '/tmp/in.png' '/tmp/out.png'; ls '/tmp/old.png'" }, false, "/tmp/old.png\n[exit code: 0]"));
+    assert.equal(state.items.length, 0);
+  });
+  test(`${surface}: literal shell paths are complete and quoted targets work`, () => {
+    const accepted = replay(reducer, events("bash", { command: "cp /tmp/in.png '/tmp/new photo.png'" }, false, "'/tmp/new photo.png'\n[exit code: 0]"));
+    assert.equal(accepted.items[0]?.path, "/tmp/new photo.png");
+    for (const [command, output] of [
+      ["cp /tmp/in.png /tmp/out.png.backup", "/tmp/out.png.backup"],
+      ["cp /tmp/in.png /tmp/out.png", "/tmp/out.png.backup"],
+      ["grep -o /tmp/old.png notes.txt", "/tmp/old.png"],
+      ["cp /tmp/in.png $(echo /tmp/old.png)", "/tmp/old.png"],
+    ]) assert.equal(replay(reducer, events("bash", { command }, false, output + "\n[exit code: 0]")).items.length, 0);
+  });
+  test(`${surface}: curl and wget output options have command-specific meanings`, () => {
+    for (const [command, expected] of [
+      ["curl -o /tmp/new.png https://example.test/image", 1],
+      ["curl --output /tmp/new.png https://example.test/image", 1],
+      ["wget -O /tmp/new.png https://example.test/image", 1],
+      ["wget --output-document /tmp/new.png https://example.test/image", 1],
+      ["curl -O /tmp/new.png", 0],
+      ["wget -o /tmp/new.png https://example.test/image", 0],
+    ]) assert.equal(replay(reducer, events("bash", { command }, false, "/tmp/new.png\n[exit code: 0]")).items.length, expected, command);
+  });
+  test(`${surface}: copy-like commands require reliable explicit destination operands`, () => {
+    for (const command of ["cp -vt/tmp/output /tmp/old.png", "cp -t/tmp/output -v /tmp/old.png", "mv -vt/tmp/output /tmp/old.png", "install -vt/tmp/output /tmp/old.png", "ln -vt/tmp/output /tmp/old.png", "ln -v /tmp/old.png", "ln --suffix .bak /tmp/old.png"]) {
+      assert.equal(replay(reducer, events("bash", { command }, false, "/tmp/old.png\n[exit code: 0]")).items.length, 0, command);
+    }
+    for (const command of ["cp -v /tmp/input.png /tmp/new.png", "ln -sv /tmp/input.png /tmp/new.png", "cp -- /tmp/input.png /tmp/new.png"]) {
+      assert.equal(replay(reducer, events("bash", { command }, false, "/tmp/new.png\n[exit code: 0]")).items[0]?.path, "/tmp/new.png", command);
+    }
+  });
+  test(`${surface}: later present survives and completed relevant calls remain bounded`, () => {
+    let state = reducer.start();
+    for (let i = 0; i < 1000; i++) {
+      const pair = events("write", { file_path: `/tmp/intermediate${i % 20}.png`, content: "payload" }, false);
+      state = reducer.update(reducer.update(state, pair[0]), pair[1]);
+      assert.equal(Object.keys(state.calls).length, 0);
+    }
+    state = reducer.update(state, { type: "deliverables/presented", seq: 1001, data: { files: [{ path: "/tmp/FINAL.png" }] } });
+    assert.ok(state.items.some(item => item.path === "/tmp/FINAL.png"));
+  });
+  test(`${surface}: irrelevant calls are not retained and relevant calls keep only paths`, () => {
+    let state = reducer.start();
+    for (let i = 0; i < 4000; i++) state = reducer.update(state, { type: "tool/call", data: { name: "read", callId: `r${i}`, arguments: '{"file_path":"huge.txt"}' } });
+    assert.equal(Object.keys(state.calls).length, 0);
+    const input = events("write", { file_path: "/tmp/a.png", content: "PAYLOAD".repeat(10000) }, false);
+    state = reducer.update(state, input[0]);
+    assert.ok(JSON.stringify(state.calls).length < 200);
+    state = reducer.update(state, input[1]);
+    assert.equal(Object.keys(state.calls).length, 0);
+    state = replay(reducer, events("write", { file_path: "/tmp/a.png" }, true));
+    assert.equal(Object.keys(state.calls).length, 0);
+  });
+}
+
+function nodes(node, type, out = []) {
+  if (Array.isArray(node)) node.forEach(child => nodes(child, type, out));
+  else if (node && typeof node === "object") { if (node.type === type) out.push(node); nodes(node.children, type, out); }
+  return out;
+}
+
+test("client normalizes cwd before dedup and uses latest revision", () => {
+  const rendered = Gallery({ cwd: "/tmp/fixture", turn: { data: {
+    zhanshi: { items: [{ path: "./actual.png", seq: 6 }] },
+    deliverables: { presented: [{ path: "/tmp//fixture/actual.png", seq: 2 }] },
+  } } });
+  const images = nodes(rendered, "img");
+  assert.equal(images.length, 1);
+  assert.equal(new URL(images[0].props.src, "https://fixture.invalid").searchParams.get("rev"), "6");
+});
+
+test("client validates cwd-resolved paths and protocol URLs for official files", () => {
+  for (const cwd of ["/tmp/.git", "/tmp/node_modules"]) {
+    assert.equal(Gallery({ cwd, turn: { data: { deliverables: { presented: [{ path: "a.png", seq: 3 }] } } } }), null);
+  }
+  const tree = Gallery({ cwd: "/tmp", turn: { data: { deliverables: { presented: [{ path: "photo.png", seq: 2 }], produced: [{ path: "clip.mp4", seq: 8 }] } } } });
+  assert.equal(nodes(tree, "img")[0].props.src, "/api/file?path=%2Ftmp%2Fphoto.png&rev=2");
+  assert.equal(nodes(tree, "video")[0].props.src, "/api/zhanshi/file?path=%2Ftmp%2Fclip.mp4&rev=8");
+});
+
+test("client prioritizes final presented files and reports hidden media", () => {
+  const state = { items: Array.from({ length: 20 }, (_, i) => ({ path: `/tmp/intermediate${i}.png`, seq: i })) };
+  const rendered = Gallery({ turn: { data: { zhanshi: state, deliverables: { presented: [{ path: "/tmp/FINAL.png", seq: 25 }] } } } });
+  const images = nodes(rendered, "img");
+  assert.equal(images.length, 16);
+  assert.ok(images.some(image => image.props.src.includes("FINAL.png")));
+  assert.match(JSON.stringify(rendered), /另有 5 项/);
+});
+
+test("client media errors remain visible with retry and open actions", () => {
+  for (const [path, type] of [["/tmp/missing.png", "img"], ["/tmp/missing.mp4", "video"]]) {
+    hookValues.length = 0;
+    const props = { turn: { data: { zhanshi: { items: [{ path, seq: 1 }] } } }, openFile() {} };
+    let rendered = Gallery(props);
+    const media = nodes(rendered, type)[0];
+    if (type === "video") assert.equal(media.props.preload, "metadata");
+    assert.equal(typeof media.props.onError, "function");
+    const card = { style: {} };
+    media.props.onError({ currentTarget: { closest: () => card } });
+    assert.notEqual(card.style.display, "none");
+    rendered = Gallery(props);
+    assert.match(JSON.stringify(rendered), /预览失败/);
+    const retry = nodes(rendered, "button").find(button => button.children.includes("重试"));
+    assert.ok(retry);
+    retry.props.onClick();
+    rendered = Gallery(props);
+    assert.notEqual(nodes(rendered, type)[0].props.src, media.props.src);
+    assert.doesNotMatch(JSON.stringify(rendered), /预览失败/);
+  }
+  hookValues.length = 0;
+});
 
 test("gallery retains trusted official deliverables with no local match", () => {
   const rendered = Gallery({ turn: { data: { deliverables: { produced: [{ path: "/tmp/official.png", seq: 3 }] } } } });
