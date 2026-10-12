@@ -1,6 +1,6 @@
 # zhanshi
 
-DeepSeek Harness 桌面插件。把本轮成功保存、读取或明确交付的图片和视频显示在回合末尾，不写进模型上下文，不负责生成媒体。
+DeepSeek Harness 桌面插件。把本轮成功保存或明确交付、且没有官方同路径交付卡的图片和视频显示在回合末尾，不写进模型上下文，不负责生成媒体。读取旧图片不是本轮产物。
 
 预览以 `id: zhanshi` 注册到 `conversation.chat.turnTail` 列表，与官方交付卡同层，不会折进工具调用列表。图片可点击打开，视频使用原生播放控件；没有媒体时不渲染。
 
@@ -19,7 +19,8 @@ Host 依赖 `connection`、`fs`；Client 依赖 `slots`、`uiConversation`。不
 
 ## 收集和展示规则
 
-- 只收集本轮明确成功且无结构化错误的 `present`、`write`、`edit`、`read_image`、支持的媒体生成/截图工具结果。`read_image` 是已读取文件，不保证本轮新生成。
+- 只收集本轮明确成功且无结构化错误的 `present`、`write`、`edit`、支持的媒体生成/截图工具结果；`read_image` 只表示查看旧文件，不进入产物区。
+- 官方 `deliverables.presented` 已承担同路径文件卡时，本插件按 cwd 规范化并去重；只抑制当前 closing seq 之前的官方卡，不抑制尚未 materialize 的 present、独立生成图、其他目录同名媒体。官方 produced 仍可作为真实本轮产物来源。
 - `shengcheng_result` 的结构化路径优先，完整保留空格、引号及 Unicode；结构化记录损坏时不以模糊文本兜底伪装成功。兼容旧的独立 `saved …` 行。
 - bash 非零退出、超时、终止、取消或仍在后台运行时不当作完成。只识别明确保存行和可可靠识别的写入目标；不把复合命令最后出现的旧文件当作目标，不解析会话日志里的示例。
 - 相对路径按会话 cwd 解析后规范化、去重；不同目录同名文件仍分别展示。同路径保留最新序号，刷新对应预览地址。
@@ -32,26 +33,29 @@ Host 依赖 `connection`、`fs`；Client 依赖 `slots`、`uiConversation`。不
 
 图片使用官方 `/api/file`，视频使用 `/api/zhanshi/file`。两者都是相对 URL，以兼容桌面 `dsh-app://`。认证由 DSH connection 处理；本插件不绕开认证。
 
-视频路由通过 composed `ctx.fs` 的 `resolve`、`processPath`、`readBytes`/`stat` 执行路径解析与读取，禁止直接用本机 Node fs 兜底绕过 provider。规范目标路径也必须满足媒体和目录过滤规则；不解析不透明 target key。
+视频路由通过 composed `ctx.fs` 的 `resolve`、`processPath`、`stat`、`readByteRange` 执行路径解析与读取；最后一个是正式有界二进制接口，sandbox provider 继承提供。禁止直接用本机 Node fs 或整文件快照兜底绕过 provider；缺少正式能力明确返回 501。规范目标路径也必须满足媒体和目录过滤规则，不解析不透明 target key。
 
-- 视频 GET 使用官方有界 `readBytes` 读取完整快照，成功后才生成响应长度和内容 SHA-256 强 ETag。单文件限制为 **64 MiB**，超限返回 413。
-- Range 基于同一快照返回 206；不可满足的单区间返回 416；格式错误或不支持的多区间忽略并返回整文件。
-- `If-Range` 仅在强 ETag 匹配时返回区间；旧/弱 ETag 或日期退回当前整文件。不发布 `Last-Modified`。
-- HEAD 只读取元数据，忽略 Range，不计算或返回内容 ETag。
-- 请求取消传入 provider；快照响应按需分块且响应取消。文件不存在、权限拒绝、超限、取消和 I/O 错误不会伪装成成功响应。
+- 视频 GET/Range 按 demand 用 `readByteRange` 读取最多 **64 KiB** 窗口，首窗在发送 headers 前读取以暴露权限/I/O 错误，之后保留 backpressure，不读取区间外内容。不可满足的单区间返回 416，格式错误/多区间忽略并返回整文件。
+- ETag 为官方版本 token 的 SHA-256，不冒称内容哈希；本地正式 token 含文件身份、大小、纳秒 mtime/ctime。`If-Range` 只接受匹配强 ETag；旧/弱标签或日期退回整文件。HEAD 忽略 Range，只取元数据，返回一致 ETag 和大小。
+- 每窗前后检查同一版本和大小，短读/增长/替换明确失败；首窗前失败返回 409/404，发送 headers 后的变化使 body stream 报错，而非静默拼接不同文件。不是持有同一描述符的不可变快照，不宣称抵御恶意本地进程隐藏版本变化的竞态。
+- 请求取消和 body consumer cancel 会中止正在执行的 provider I/O、释放监听及窗口；文件不存在、权限拒绝、超限、取消和 I/O 错误不会伪装成功。
+- **64 MiB 是预览产品限制，不是生成限制。** shengcheng 可保存至 256 MiB 视频；超过预览上限，HEAD/GET 返回 413 和明确 `X-Zhanshi-Preview: open-file` / `X-Zhanshi-File-Size`。Client 用 HEAD 区分大文件，显示实际 MiB 与「打开文件」，不提高内存上限、不会删掉已保存媒体。HEAD 权限/404/500 仍可见错误并支持重试。
 
-**开销与保证范围：** 每个视频 Range 请求也需要读取并计算整个文件的哈希，不是零拷贝视频流。每请求快照最多 64 MiB，provider 内部临时缓冲及并发请求会额外占用内存。完整快照避免本插件先发错误长度、再遇到文件增长/删除才报错；不宣称修复官方 provider 内部所有并发文件变化问题。大视频可通过文件卡打开，不会自动突破限制。
+**开销与保证范围：** 已删除旧的全文件快照/内容哈希实现；Range 不再为几字节请求读完/哈希整个文件。每次 demand 只读取一个有界窗口，provider 内部缓冲与并发请求仍有开销，不宣称零拷贝。大视频的打开动作依赖 Host 提供的 `openFile`；没有该能力时保留文件路径和普通文件链接，不能宣称外部程序已打开。
 
 ## 开发与验证
 
+正式 FS 集成测试要求完整、只读的官方安装包提取目录；缺少 `DSH_OFFICIAL_ROOT` 或包文件明确失败，不跳过、不退回旧 checkout。只在随机临时 fixture 写入媒体，官方源码只 import，不修改。
+
 ```bash
-node --check lib/index.js
-node --check lib/client.js
-node --check lib/parse.js
-node --test
+export DSH_OFFICIAL_ROOT=/absolute/path/to/extracted-official-runtime
+for file in lib/*.js; do /usr/local/bin/node --check "$file" || exit; done
+/usr/local/bin/node --test
 ```
 
-回归测试覆盖真实 Client reducer/Gallery 与纯解析模块、结构化路径、复合命令、展示优先级、调用清理、失败卡、FS provider 拒绝、取消和 Range/If-Range。
+2026-10-12 修复：143/143 完整回归通过，实际 Client reducer/Gallery/HEAD effect 执行验证 read_image 非产物、官方 present 同路径去重、256 MiB 降级/打开、403/404/500 可见、dispose 取消。正式 `SandboxPolicyService` + `SandboxedFileSystem` 验证 read-only Range、替换后 If-Range、256 MiB HEAD 413；受控 provider 验证单窗 backpressure、consumer cancel 中止 in-flight IO、增长/缩小/删除/版本错误。参考读、二进制窗与交付去重均记录修复前失败、修复后通过。不读取真实凭据、不生成付费媒体、不重启桌面，未执行新版本真实桌面 UI 验收。
+
+同日通过实际 Chrome + React 18.3.1 隔离 DOM 烟雾测试：读取旧图为空、官方 presented 同路径去重而独立图片仍显示、图片打开路径、256 MiB HEAD 降级/打开、unmount，零 page error。仅拦截 `fixture.invalid` 本地合成请求，不新建服务器、不操作用户正在使用的 GUI。运行 `scripts/browser-smoke.mjs` 需显式设置现成只读依赖 `DSH_PLAYWRIGHT_MODULE`（Playwright index.mjs）、`DSH_REACT_UMD`、`DSH_REACT_DOM_UMD`、`DSH_BROWSER_EXECUTABLE`；缺少会失败，不安装依赖。这是独立浏览器替代检查，仍不等于 desktop 已重载新实现。
 
 0.1.3 修复验证（2026-10-07）：136/136 回归通过；安装包官方 reader 函数配合真实临时文件的 5 项增长、缩小、删除、符号链接和取消检查通过；独立 Chrome + React 18 夹具加载实际 Client/Host，验证去重、交付优先、溢出、失败/重试/打开、视频播放和拖动、桌面/手机宽度及空状态。夹具文件服务采用受控 provider，图片接口模拟官方接口，不代表连接了已重启的桌面运行实例。
 

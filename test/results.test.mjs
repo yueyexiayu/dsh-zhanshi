@@ -7,7 +7,10 @@ import { applyTurnEvent, emptyTurnState } from "../lib/parse.js";
 // Exercise the shipped browser reducer, not a copy of its implementation.
 const hookValues = [];
 let hookIndex = 0;
+const effects = [];
+let previewFetch;
 const fakeReact = {
+  useEffect(effect) { effects.push(effect); },
   createElement(type, props, ...children) {
     if (typeof type === "function") { hookIndex = 0; return type(props); }
     return { type, props, children };
@@ -17,6 +20,8 @@ const fakeReact = {
 let definition;
 let Gallery;
 runInNewContext(readFileSync(new URL("../lib/client.js", import.meta.url), "utf8"), {
+  AbortController,
+  fetch: (...args) => previewFetch(...args),
   window: { __ModuleLoader__: { load(bundle) {
     bundle.factory(() => fakeReact).apply({
       uiConversation: { events: { register(value) { definition = value; } } },
@@ -59,10 +64,10 @@ for (const [surface, reducer] of Object.entries(reducers)) {
       const state = replay(reducer, events(name, args, true));
       assert.equal(state.items.length, 0);
     });
-    test(`${surface}: v4 successful ${name} still contributes media`, () => {
+    test(`${surface}: v4 successful ${name} ${name === "read_image" ? "does not imply production" : "still contributes media"}`, () => {
       const state = replay(reducer, events(name, args, false));
-      assert.equal(state.items.length, 1);
-      assert.equal(state.items[0].path, "/tmp/output.png");
+      assert.equal(state.items.length, name === "read_image" ? 0 : 1);
+      if (name !== "read_image") assert.equal(state.items[0].path, "/tmp/output.png");
     });
   }
   for (const text of [
@@ -198,10 +203,18 @@ function nodes(node, type, out = []) {
   return out;
 }
 
+test("client does not duplicate an official presented card, including relative aliases", () => {
+  const rendered = Gallery({ cwd: "/tmp/fixture", seq: 9, turn: { data: {
+    zhanshi: { items: [{ path: "./actual.png", seq: 6 }] },
+    deliverables: { presented: [{ path: "/tmp//fixture/actual.png", seq: 2 }], produced: [{ path: "actual.png", seq: 6 }] },
+  } } });
+  assert.equal(rendered, null);
+});
+
 test("client normalizes cwd before dedup and uses latest revision", () => {
   const rendered = Gallery({ cwd: "/tmp/fixture", turn: { data: {
     zhanshi: { items: [{ path: "./actual.png", seq: 6 }] },
-    deliverables: { presented: [{ path: "/tmp//fixture/actual.png", seq: 2 }] },
+    deliverables: { produced: [{ path: "/tmp//fixture/actual.png", seq: 2 }] },
   } } });
   const images = nodes(rendered, "img");
   assert.equal(images.length, 1);
@@ -212,14 +225,15 @@ test("client validates cwd-resolved paths and protocol URLs for official files",
   for (const cwd of ["/tmp/.git", "/tmp/node_modules"]) {
     assert.equal(Gallery({ cwd, turn: { data: { deliverables: { presented: [{ path: "a.png", seq: 3 }] } } } }), null);
   }
-  const tree = Gallery({ cwd: "/tmp", turn: { data: { deliverables: { presented: [{ path: "photo.png", seq: 2 }], produced: [{ path: "clip.mp4", seq: 8 }] } } } });
+  const tree = Gallery({ cwd: "/tmp", turn: { data: { deliverables: { produced: [{ path: "photo.png", seq: 2 }, { path: "clip.mp4", seq: 8 }] } } } });
   assert.equal(nodes(tree, "img")[0].props.src, "/api/file?path=%2Ftmp%2Fphoto.png&rev=2");
   assert.equal(nodes(tree, "video")[0].props.src, "/api/zhanshi/file?path=%2Ftmp%2Fclip.mp4&rev=8");
 });
 
 test("client prioritizes final presented files and reports hidden media", () => {
   const state = { items: Array.from({ length: 20 }, (_, i) => ({ path: `/tmp/intermediate${i}.png`, seq: i })) };
-  const rendered = Gallery({ turn: { data: { zhanshi: state, deliverables: { presented: [{ path: "/tmp/FINAL.png", seq: 25 }] } } } });
+  state.items.push({ path: "/tmp/FINAL.png", seq: 25, source: "present", presented: true });
+  const rendered = Gallery({ turn: { data: { zhanshi: state } } });
   const images = nodes(rendered, "img");
   assert.equal(images.length, 16);
   assert.ok(images.some(image => image.props.src.includes("FINAL.png")));
@@ -296,6 +310,45 @@ test("client gallery keeps equal basenames in separate directories", () => {
     ["/tmp/first/output.jpg", "/tmp/second/output.jpg"]);
 });
 
+test("client video HEAD downgrades 256MiB saved media with a usable open action", async () => {
+  hookValues.length = 0;
+  let opened;
+  previewFetch = async (url, options) => {
+    assert.equal(options.method, "HEAD");
+    assert.equal(url, "/api/zhanshi/file?path=%2Ftmp%2Flarge.mp4&rev=1");
+    return new Response(null, { status: 413, headers: { "X-Zhanshi-Preview": "open-file", "X-Zhanshi-File-Size": String(256 * 1048576) } });
+  };
+  const props = { turn: { data: { zhanshi: { items: [{ path: "/tmp/large.mp4", kind: "video", seq: 1 }] } } }, openFile(path) { opened = path; } };
+  Gallery(props); const cleanup = effects.at(-1)();
+  await new Promise(resolve => setImmediate(resolve));
+  const rendered = Gallery(props);
+  assert.equal(nodes(rendered, "video").length, 0);
+  assert.match(JSON.stringify(rendered), /256 MiB.*64 MiB/);
+  nodes(rendered, "button").find(button => button.children.includes("打开文件")).props.onClick();
+  assert.equal(opened, "/tmp/large.mp4"); cleanup(); hookValues.length = 0;
+});
+
+test("client video HEAD failures remain visible and disposed requests do not update state", async () => {
+  const props = { turn: { data: { zhanshi: { items: [{ path: "/tmp/missing.mp4", kind: "video", seq: 1 }] } } } };
+  for (const status of [403, 404, 500]) {
+    hookValues.length = 0; previewFetch = async () => new Response(null, { status });
+    Gallery(props); const cleanup = effects.at(-1)(); await new Promise(resolve => setImmediate(resolve));
+    assert.match(JSON.stringify(Gallery(props)), new RegExp("HTTP " + status)); cleanup();
+  }
+  hookValues.length = 0; let release, signal;
+  previewFetch = (_url, options) => { signal = options.signal; return new Promise(resolve => { release = resolve; }); };
+  Gallery(props); const cleanup = effects.at(-1)(); cleanup();
+  assert.equal(signal.aborted, true); release(new Response(null, { status: 404 }));
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(hookValues[0], false);
+  hookValues.length = 0;
+});
+
+for (const [surface, reducer] of Object.entries(reducers)) {
+  test(`${surface}: read_image is inspection, not this-turn production`, () => {
+    assert.equal(replay(reducer, events("read_image", { file_path: "/tmp/old.png" }, false)).items.length, 0);
+  });
+}
+
 test("client gallery merges official present with local latest seq without hiding other media", () => {
   const rendered = Gallery({ turn: { data: {
     zhanshi: { items: [
@@ -305,6 +358,6 @@ test("client gallery merges official present with local latest seq without hidin
     deliverables: { presented: [{ path: "/tmp/output.jpg", seq: 2 }] },
   } } });
   const media = galleryMedia(rendered);
-  assert.deepEqual(media.map(item => item.type), ["img", "video"]);
-  assert.equal(new URL(media[0].src, "https://fixture.invalid").searchParams.get("rev"), "6");
+  assert.deepEqual(media.map(item => item.type), ["video"]);
+  assert.equal(new URL(media[0].src, "https://fixture.invalid").searchParams.get("rev"), "5");
 });
