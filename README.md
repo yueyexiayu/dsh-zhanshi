@@ -1,6 +1,32 @@
-# zhanshi
+<div align="center">
+<img src="docs/repo-assets/hero.svg" width="100%" alt="本轮媒体产物、官方卡去重与预览的原创示意，非实际应用截图" />
+<h1>zhanshi · 让本轮产物看得见</h1>
+<p><strong>把成功保存的图片和视频放到回合末尾，不重复官方交付卡。</strong></p>
+<p><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
+<p><a href="package.json">v0.1.3</a> · <a href="LICENSE">MIT</a> · DSH desktop plugin</p>
+<p><a href="#核心能力">核心能力</a> · <a href="#工作方式">工作方式</a> · <a href="#安装与生效">安装与生效</a> · <a href="#收集和展示规则">收集规则</a> · <a href="#文件读取和边界">文件边界</a> · <a href="#开发与验证">验证</a></p>
+</div>
 
-DeepSeek Harness 桌面插件。把本轮成功保存或明确交付、且没有官方同路径交付卡的图片和视频显示在回合末尾，不写进模型上下文，不负责生成媒体。读取旧图片不是本轮产物。
+---
+
+只展示本轮成功保存或明确交付、且没有官方同路径卡的媒体。不写入模型上下文、不生成媒体、不替换官方渲染器。**读取旧图片不是本轮产物。**
+
+## 核心能力
+
+<table><tr>
+<td width="33%"><strong>🖼 回合末尾预览</strong><br/><br/>图片可打开，视频有原生控件，没有媒体时不渲染。</td>
+<td width="33%"><strong>🧭 本轮归属与去重</strong><br/><br/>按实际成功结果、cwd与序号识别，官方同路径交付卡优先。</td>
+<td width="33%"><strong>📁 有界读取</strong><br/><br/>视频按需64KiB窗口读取；超64MiB明确改为打开文件，不删除媒体。</td>
+</tr><tr>
+<td><strong>🔤 真实路径</strong><br/><br/>优先结构化生成结果，保留空格、引号及Unicode，不用损坏文本假装成功。</td>
+<td><strong>🛡 正式文件服务</strong><br/><br/>沿用DSH认证、权限和有界reader，缺失能力报错，不裸读绕过。</td>
+<td><strong>🧾 可见的失败</strong><br/><br/>加载失败保留卡片、重试及路径；不把后台未完成或取消当成产物。</td>
+</tr></table>
+
+## 工作方式
+
+![本轮工具结果经成功判断、官方交付去重及媒体过滤后，在回合末尾呈现预览或打开文件入口。](docs/repo-assets/workflow.zh-CN.svg)
+
 
 预览以 `id: zhanshi` 注册到 `conversation.chat.turnTail` 列表，与官方交付卡同层，不会折进工具调用列表。图片可点击打开，视频使用原生播放控件；没有媒体时不渲染。
 
@@ -59,4 +85,15 @@ for file in lib/*.js; do /usr/local/bin/node --check "$file" || exit; done
 
 0.1.3 修复验证（2026-10-07）：136/136 回归通过；安装包官方 reader 函数配合真实临时文件的 5 项增长、缩小、删除、符号链接和取消检查通过；独立 Chrome + React 18 夹具加载实际 Client/Host，验证去重、交付优先、溢出、失败/重试/打开、视频播放和拖动、桌面/手机宽度及空状态。夹具文件服务采用受控 provider，图片接口模拟官方接口，不代表连接了已重启的桌面运行实例。
 
-**待运行态验收：** 本轮没有关闭正在使用的 DSH。单元测试或独立浏览器夹具不是桌面重启后的真实验收；完全退出并重开后，仍需在实际会话确认新插件加载及图片、视频展示。
+**待运行态验收：** 历史修复没有关闭正在使用的 DSH。单元测试或独立浏览器夹具不是桌面重启后的真实验收；完全退出并重开后，仍需在实际会话确认新插件加载及图片、视频展示。
+
+<details>
+<summary><strong>大视频为什么显示「打开文件」？</strong></summary>
+
+64MiB只是插件视频预览上限，不是生成或保存上限。较大媒体仍留在原路径，插件不为预览扩大整文件内存，也不删除已经成功保存的文件。
+
+</details>
+
+**本次仅更新双语文档和原创图示，检查链接及桌面/手机排版；未重跑产品测试、未生成付费媒体或重启 DSH。** [MIT License](LICENSE)。
+
+<div align="center"><sub>展示真实产物，保留真实错误。 · <a href="README.en.md">Read in English →</a></sub></div>
