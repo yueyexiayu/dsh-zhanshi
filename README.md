@@ -3,7 +3,7 @@
 <h1>zhanshi · 让本轮产物看得见</h1>
 <p><strong>把成功保存的图片和视频放到回合末尾，不重复官方交付卡。</strong></p>
 <p><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
-<p><a href="package.json">v0.1.3</a> · <a href="LICENSE">MIT</a> · DSH desktop plugin</p>
+<p><a href="package.json">v0.1.4</a> · <a href="LICENSE">MIT</a> · DSH desktop plugin</p>
 <p><a href="#核心能力">核心能力</a> · <a href="#工作方式">工作方式</a> · <a href="#安装与生效">安装与生效</a> · <a href="#收集和展示规则">收集规则</a> · <a href="#文件读取和边界">文件边界</a> · <a href="#开发与验证">验证</a></p>
 </div>
 

@@ -3,7 +3,7 @@
 <h1>zhanshi · See this turn's outputs</h1>
 <p><strong>Show saved images/videos at the turn tail without duplicating official deliverable cards.</strong></p>
 <p><a href="README.md">简体中文</a> · <strong>English</strong></p>
-<p><a href="package.json">v0.1.3</a> · <a href="LICENSE">MIT</a> · DSH desktop plugin</p>
+<p><a href="package.json">v0.1.4</a> · <a href="LICENSE">MIT</a> · DSH desktop plugin</p>
 <p><a href="#features">Features</a> · <a href="#how-it-works">How it works</a> · <a href="#installation">Installation</a> · <a href="#collection-rules">Collection</a> · <a href="#file-boundaries">File boundaries</a> · <a href="#validation">Validation</a></p>
 </div>
 
