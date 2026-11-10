@@ -13,8 +13,11 @@ try {
     const req = route.request(), url = new URL(req.url());
     assert.equal(url.host, "fixture.invalid", "external request forbidden"); calls.push([req.method(), url.pathname]);
     if (url.pathname === "/") return route.fulfill({ contentType: "text/html", body: '<div id="root"></div>' });
-    if (url.pathname === "/api/zhanshi/file") return route.fulfill({ status: 413, headers: { "X-Zhanshi-Preview": "open-file", "X-Zhanshi-File-Size": String(256 * 1048576) }, body: "Saved file is larger than preview limit" });
-    if (url.pathname === "/api/file") return route.fulfill({ contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64") });
+    if (url.pathname === "/api/zhanshi/file") {
+      const path = url.searchParams.get("path") || "";
+      if (path.endsWith("large.mp4")) return route.fulfill({ status: 413, headers: { "X-Zhanshi-Preview": "open-file", "X-Zhanshi-File-Size": String(256 * 1048576), "X-Zhanshi-Preview-Limit": String(64 * 1048576) }, body: "Saved file is larger than preview limit" });
+      return route.fulfill({ contentType: "image/png", headers: { "X-Zhanshi-File-Size": "68", "X-Zhanshi-Preview-Limit": String(64 * 1048576) }, body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64") });
+    }
     throw new Error("unexpected fixture URL: " + url.pathname);
   });
   await page.goto("http://fixture.invalid/");
@@ -34,14 +37,17 @@ try {
   await page.waitForFunction(() => !document.querySelector(".zs-gallery"));
   await render({ zhanshi: { items: [{ path: "output.png", kind: "image", source: "shengcheng", seq: 3 }, { path: "independent.png", kind: "image", source: "shengcheng", seq: 4 }] }, deliverables: { presented: [{ path: "/tmp/fixture/output.png", seq: 5 }] } });
   await page.waitForSelector('figure[data-path="/tmp/fixture/independent.png"] img');
-  assert.equal(await page.locator("figure").count(), 1);
-  await page.locator(".zs-hit").click(); assert.deepEqual(await page.evaluate(() => opened), ["/tmp/fixture/independent.png"]);
+  assert.equal(await page.locator("figure").count(), 2);
+  assert.equal(await page.locator('figure[data-path="/tmp/fixture/output.png"] img').getAttribute("loading"), "lazy");
+  assert.equal(await page.locator('figure[data-path="/tmp/fixture/output.png"] img').getAttribute("decoding"), "async");
+  await page.locator('figure[data-path="/tmp/fixture/independent.png"] .zs-hit').click(); assert.deepEqual(await page.evaluate(() => opened), ["/tmp/fixture/independent.png"]);
   await render({ zhanshi: { items: [{ path: "large.mp4", kind: "video", source: "shengcheng", seq: 6 }] } });
   await page.getByText(/256 MiB.*64 MiB/).waitFor(); assert.equal(await page.locator("video").count(), 0);
   await page.getByRole("button", { name: "打开文件", exact: true }).click();
   assert.deepEqual(await page.evaluate(() => opened), ["/tmp/fixture/independent.png", "/tmp/fixture/large.mp4"]);
   assert.ok(calls.some(([method, pathname]) => method === "HEAD" && pathname === "/api/zhanshi/file"));
+  assert.equal(calls.some(([, pathname]) => pathname === "/api/file"), false);
   assert.deepEqual(errors, []);
   await page.evaluate(() => root.unmount());
-  console.log("Real Chrome + React18 isolated Client smoke passed: read-image exclusion, official-present dedup, independent image/open, 256MiB HEAD downgrade/open, unmount; no page errors.");
+  console.log("Real Chrome + React18 isolated Client smoke passed: image lazy load, unified media route, read-image exclusion, official-present preview, independent image/open, 256MiB HEAD downgrade/open, unmount; no page errors.");
 } finally { await browser.close(); }

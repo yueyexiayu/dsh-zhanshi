@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { apply, inject, serveMedia, MAX_PREVIEW_BYTES } from "../lib/index.js";
+import { apply, CHUNK_BYTES, inject, serveMedia, MAX_PREVIEW_BYTES } from "../lib/index.js";
 const path = "/virtual/clip.mp4";
 const bytes = new TextEncoder().encode("0123456789");
 const request = (options = {}, file = path) => new Request(`http://localhost/api/zhanshi/file?path=${encodeURIComponent(file)}`, options);
@@ -43,6 +43,13 @@ test("GET reads only the requested bounded window with provider metadata", async
   assert.equal(await response.text(), "234");
   assert.equal(calls[0][2].signal, req.signal);
   assert.deepEqual(calls.find(call => call[0] === "readByteRange").slice(2), [{ offset: 2, length: 3 }, req.signal]);
+});
+test("the bounded route also serves image MIME types used by the gallery", async () => {
+  const { fs } = provider({ processPath() { return "/virtual/photo.webp"; } });
+  const response = await serveMedia(request({}, "/virtual/photo.webp"), fs);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "image/webp");
+  assert.equal(await response.text(), "0123456789");
 });
 test("HEAD ignores Range and If-Range and never reads content", async () => {
   const { fs, calls } = provider();
@@ -107,11 +114,11 @@ test("cancellation during first provider read is propagated", async () => {
 });
 test("backpressure reads one window at a time; request abort stops future reads", async () => {
   const controller = new AbortController(); let reads = 0;
-  const { fs } = largeProvider({ async readByteRange(_target, range) { reads++; assert.ok(range.length <= 65536); return new Uint8Array(range.length); } });
+  const { fs } = largeProvider({ async readByteRange(_target, range) { reads++; assert.ok(range.length <= CHUNK_BYTES); return new Uint8Array(range.length); } });
   const response = await serveMedia(request({ signal: controller.signal }), fs);
   assert.equal(reads, 1); await Promise.resolve(); assert.equal(reads, 1);
-  const reader = response.body.getReader(); assert.equal((await reader.read()).value.length, 65536); assert.equal(reads, 1);
-  assert.equal((await reader.read()).value.length, 65536); assert.equal(reads, 2);
+  const reader = response.body.getReader(); assert.equal((await reader.read()).value.length, CHUNK_BYTES); assert.equal(reads, 1);
+  assert.equal((await reader.read()).value.length, CHUNK_BYTES); assert.equal(reads, 2);
   controller.abort(); await assert.rejects(reader.read(), { name: "AbortError" }); assert.equal(reads, 2);
 });
 test("consumer cancellation aborts in-flight provider IO without unhandled errors", async () => {
@@ -140,4 +147,12 @@ test("HEAD metadata errors, 64MiB limit and unsupported seam fail visibly", asyn
     assert.equal((await serveMedia(request({ method: "HEAD" }), provider({ stat: async () => info }).fs)).status, status);
   }
   assert.equal((await serveMedia(request(), provider({ readByteRange: undefined }).fs)).status, 501);
+});
+test("oversized HEAD reports preview size and limit headers", async () => {
+  const { fs } = provider({ stat: async () => ({ type: "file", size: MAX_PREVIEW_BYTES + 1, version: "large" }) });
+  const response = await serveMedia(request({ method: "HEAD" }), fs);
+  assert.equal(response.status, 413);
+  assert.equal(response.headers.get("x-zhanshi-preview"), "open-file");
+  assert.equal(response.headers.get("x-zhanshi-file-size"), String(MAX_PREVIEW_BYTES + 1));
+  assert.equal(response.headers.get("x-zhanshi-preview-limit"), String(MAX_PREVIEW_BYTES));
 });

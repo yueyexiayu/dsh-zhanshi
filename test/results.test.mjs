@@ -46,6 +46,7 @@ const calls = [
   ["bash", { command: "cp input.png /tmp/output.png" }],
   ["shengcheng", {}],
   ["chrome_screenshot", {}],
+  ["huoqu", {}],
 ];
 function events(name, args, isError, text = "saved /tmp/output.png", extra = {}) {
   return [
@@ -95,6 +96,20 @@ for (const [surface, reducer] of Object.entries(reducers)) {
     assert.equal(after.items.length, 1);
     assert.equal(after.items[0].seq, 2);
   });
+  test(`${surface}: replacement tool results do not contribute media`, () => {
+    const good = replay(reducer, events("write", calls[0][1], false));
+    const call = events("write", { file_path: "/tmp/replacement.png" }, false)[0];
+    const result = events("write", { file_path: "/tmp/replacement.png" }, false)[1];
+    call.seq = 8;
+    result.seq = 9;
+    result.surfaceOp = "replace";
+    const match = definition.match(result);
+    assert.equal(match.id, "1");
+    assert.equal(match.role, "update");
+    const after = reducer.update(reducer.update(good, call), result);
+    assert.deepEqual(Array.from(after.items, item => item.path), ["/tmp/output.png"]);
+    assert.equal(Object.keys(after.calls).length, 0);
+  });
 }
 
 for (const [surface, reducer] of Object.entries(reducers)) {
@@ -132,6 +147,12 @@ for (const [surface, reducer] of Object.entries(reducers)) {
     }
     assert.equal(replay(reducer, events("shengcheng", {}, false, structured, { error: { code: "IO_ERROR" } })).items.length, 0);
   });
+  test(`${surface}: huoqu labeled local preview is media, but missing/relative output is not`, () => {
+    assert.deepEqual(Array.from(replay(reducer, events("huoqu", {}, false, "本地预览：/tmp/source.png")).items, item => item.path), ["/tmp/source.png"]);
+    for (const text of ["本地预览：未生成", "本地预览：relative.png", "说明：本地预览：/tmp/example.png"]) {
+      assert.equal(replay(reducer, events("huoqu", {}, false, text)).items.length, 0, text);
+    }
+  });
 }
 
 for (const [surface, reducer] of Object.entries(reducers)) {
@@ -164,6 +185,20 @@ for (const [surface, reducer] of Object.entries(reducers)) {
       ["curl -O /tmp/new.png", 0],
       ["wget -o /tmp/new.png https://example.test/image", 0],
     ]) assert.equal(replay(reducer, events("bash", { command }, false, "/tmp/new.png\n[exit code: 0]")).items.length, expected, command);
+  });
+  test(`${surface}: image tools and joined output options keep parser parity`, () => {
+    for (const [command, expected] of [
+      ["magick identify /tmp/source.png", 0],
+      ["convert /tmp/source.png /tmp/new.png", 1],
+      ["magick /tmp/source.png -resize 50% /tmp/new.png", 1],
+      ["ffmpeg -i /tmp/source.png", 0],
+      ["curl --output=/tmp/new.png https://example.test/image", 1],
+      ["wget --output-document=/tmp/new.png https://example.test/image", 1],
+      ["curl https://example.test/image | tee /tmp/new.png", 1],
+    ]) {
+      const path = expected ? "/tmp/new.png" : "/tmp/source.png";
+      assert.equal(replay(reducer, events("bash", { command }, false, `${path}\n[exit code: 0]`)).items.length, expected, command);
+    }
   });
   test(`${surface}: copy-like commands require reliable explicit destination operands`, () => {
     for (const command of ["cp -vt/tmp/output /tmp/old.png", "cp -t/tmp/output -v /tmp/old.png", "mv -vt/tmp/output /tmp/old.png", "install -vt/tmp/output /tmp/old.png", "ln -vt/tmp/output /tmp/old.png", "ln -v /tmp/old.png", "ln --suffix .bak /tmp/old.png"]) {
@@ -203,31 +238,59 @@ function nodes(node, type, out = []) {
   return out;
 }
 
-test("client does not duplicate an official presented card, including relative aliases", () => {
+test("client keeps a single media preview when an official card presents the same path", () => {
   const rendered = Gallery({ cwd: "/tmp/fixture", seq: 9, turn: { data: {
     zhanshi: { items: [{ path: "./actual.png", seq: 6 }] },
     deliverables: { presented: [{ path: "/tmp//fixture/actual.png", seq: 2 }], produced: [{ path: "actual.png", seq: 6 }] },
   } } });
-  assert.equal(rendered, null);
+  const images = nodes(rendered, "img");
+  assert.equal(images.length, 1);
+  assert.equal(new URL(images[0].props.src, "https://fixture.invalid").searchParams.get("path"), "/tmp/fixture/actual.png");
 });
 
-test("client normalizes cwd before dedup and uses latest revision", () => {
+test("client normalizes cwd before dedup", () => {
   const rendered = Gallery({ cwd: "/tmp/fixture", turn: { data: {
     zhanshi: { items: [{ path: "./actual.png", seq: 6 }] },
     deliverables: { produced: [{ path: "/tmp//fixture/actual.png", seq: 2 }] },
   } } });
   const images = nodes(rendered, "img");
   assert.equal(images.length, 1);
-  assert.equal(new URL(images[0].props.src, "https://fixture.invalid").searchParams.get("rev"), "6");
+  assert.equal(new URL(images[0].props.src, "https://fixture.invalid").searchParams.get("path"), "/tmp/fixture/actual.png");
 });
 
-test("client validates cwd-resolved paths and protocol URLs for official files", () => {
+test("client validates cwd-resolved paths and uses the bounded media route", () => {
   for (const cwd of ["/tmp/.git", "/tmp/node_modules"]) {
     assert.equal(Gallery({ cwd, turn: { data: { deliverables: { presented: [{ path: "a.png", seq: 3 }] } } } }), null);
   }
   const tree = Gallery({ cwd: "/tmp", turn: { data: { deliverables: { produced: [{ path: "photo.png", seq: 2 }, { path: "clip.mp4", seq: 8 }] } } } });
-  assert.equal(nodes(tree, "img")[0].props.src, "/api/file?path=%2Ftmp%2Fphoto.png&rev=2");
-  assert.equal(nodes(tree, "video")[0].props.src, "/api/zhanshi/file?path=%2Ftmp%2Fclip.mp4&rev=8");
+  assert.equal(nodes(tree, "img")[0].props.src, "/api/zhanshi/file?path=%2Ftmp%2Fphoto.png");
+  assert.equal(nodes(tree, "video")[0].props.src, "/api/zhanshi/file?path=%2Ftmp%2Fclip.mp4");
+  assert.equal(nodes(tree, "img")[0].props.loading, "lazy");
+  assert.equal(nodes(tree, "img")[0].props.decoding, "async");
+  assert.equal(nodes(tree, "img")[0].props.referrerPolicy, "no-referrer");
+});
+
+test("client resolves Windows drive paths and deduplicates canonical argument aliases", () => {
+  const windows = Gallery({ cwd: "C:\\work", turn: { data: {
+    zhanshi: { items: [{ path: "out\\Image.png" }] },
+    deliverables: { produced: [{ path: "c:/WORK/OUT/image.png" }] },
+  } } });
+  assert.equal(nodes(windows, "img").length, 1);
+  assert.equal(new URL(nodes(windows, "img")[0].props.src, "https://fixture.invalid").searchParams.get("path"), "C:/WORK/OUT/image.png");
+  const aliased = Gallery({ cwd: "/tmp/work", turn: { data: {
+    zhanshi: { items: [{ path: "argument.png", seq: 2 }] },
+    deliverables: { produced: [{ path: "/tmp/canonical.png", argumentPath: "argument.png" }] },
+  } } });
+  const images = nodes(aliased, "img");
+  assert.equal(images.length, 1);
+  assert.equal(new URL(images[0].props.src, "https://fixture.invalid").searchParams.get("path"), "/tmp/canonical.png");
+});
+
+test("client merges official presented files and keeps post-closing media", () => {
+  const presented = Gallery({ seq: 2, turn: { data: { deliverables: { presented: [{ path: "/tmp/presented.png", seq: 8 }] } } } });
+  assert.equal(nodes(presented, "img").length, 1);
+  const late = Gallery({ seq: 2, turn: { data: { zhanshi: { items: [{ path: "/tmp/late.png", seq: 9 }] } } } });
+  assert.equal(nodes(late, "img").length, 1);
 });
 
 test("client prioritizes final presented files and reports hidden media", () => {
@@ -273,6 +336,26 @@ test("client gallery remains empty after failed collection", () => {
   assert.equal(Gallery({ turn: { data: { zhanshi: state } } }), null);
 });
 
+test("client definition runs the full match/start/update path and clears replacement calls", () => {
+  const startEvent = { type: "turn/start", seq: 0, data: { turn: 1 } };
+  const start = definition.match(startEvent);
+  assert.equal(start.id, "1");
+  assert.equal(start.role, "start");
+  let state = definition.start({}, { event: startEvent });
+  const [callEvent, resultEvent] = events("write", { file_path: "/tmp/output.png" }, false);
+  const call = definition.match(callEvent);
+  assert.equal(call.id, "1");
+  assert.equal(call.role, "update");
+  state = definition.update({ state }, { event: callEvent });
+  resultEvent.surfaceOp = "replace";
+  const result = definition.match(resultEvent);
+  assert.equal(result.id, "1");
+  assert.equal(result.role, "update");
+  state = definition.update({ state }, { event: resultEvent });
+  assert.equal(Object.keys(state.calls).length, 0);
+  assert.equal(state.items.length, 0);
+});
+
 function galleryMedia(node, out = []) {
   if (Array.isArray(node)) {
     for (const child of node) galleryMedia(child, out);
@@ -310,23 +393,30 @@ test("client gallery keeps equal basenames in separate directories", () => {
     ["/tmp/first/output.jpg", "/tmp/second/output.jpg"]);
 });
 
-test("client video HEAD downgrades 256MiB saved media with a usable open action", async () => {
-  hookValues.length = 0;
-  let opened;
-  previewFetch = async (url, options) => {
-    assert.equal(options.method, "HEAD");
-    assert.equal(url, "/api/zhanshi/file?path=%2Ftmp%2Flarge.mp4&rev=1");
-    return new Response(null, { status: 413, headers: { "X-Zhanshi-Preview": "open-file", "X-Zhanshi-File-Size": String(256 * 1048576) } });
-  };
-  const props = { turn: { data: { zhanshi: { items: [{ path: "/tmp/large.mp4", kind: "video", seq: 1 }] } } }, openFile(path) { opened = path; } };
-  Gallery(props); const cleanup = effects.at(-1)();
-  await new Promise(resolve => setImmediate(resolve));
-  const rendered = Gallery(props);
-  assert.equal(nodes(rendered, "video").length, 0);
-  assert.match(JSON.stringify(rendered), /256 MiB.*64 MiB/);
-  nodes(rendered, "button").find(button => button.children.includes("打开文件")).props.onClick();
-  assert.equal(opened, "/tmp/large.mp4"); cleanup(); hookValues.length = 0;
-});
+for (const [kind, mediaType, path, label] of [
+  ["image", "img", "/tmp/large.png", "图片"],
+  ["video", "video", "/tmp/large.mp4", "视频"],
+]) {
+  test(`client ${kind} HEAD downgrades oversized media with retry and open actions`, async () => {
+    hookValues.length = 0;
+    let opened;
+    previewFetch = async (url, options) => {
+      assert.equal(options.method, "HEAD");
+      assert.equal(url, "/api/zhanshi/file?path=" + encodeURIComponent(path));
+      return new Response(null, { status: 413, headers: { "X-Zhanshi-Preview": "open-file", "X-Zhanshi-File-Size": String(256 * 1048576), "X-Zhanshi-Preview-Limit": String(64 * 1048576) } });
+    };
+    const props = { turn: { data: { zhanshi: { items: [{ path, kind, seq: 1 }] } } }, openFile(value) { opened = value; } };
+    Gallery(props); const cleanup = effects.at(-1)();
+    await new Promise(resolve => setImmediate(resolve));
+    const rendered = Gallery(props);
+    assert.equal(nodes(rendered, mediaType).length, 0);
+    assert.match(JSON.stringify(rendered), new RegExp(label + ".*256 MiB.*64 MiB"));
+    const buttons = nodes(rendered, "button");
+    assert.ok(buttons.find(button => button.children.includes("重试")));
+    buttons.find(button => button.children.includes("打开文件")).props.onClick();
+    assert.equal(opened, path); cleanup(); hookValues.length = 0;
+  });
+}
 
 test("client video HEAD failures remain visible and disposed requests do not update state", async () => {
   const props = { turn: { data: { zhanshi: { items: [{ path: "/tmp/missing.mp4", kind: "video", seq: 1 }] } } } };
@@ -358,6 +448,19 @@ test("client gallery merges official present with local latest seq without hidin
     deliverables: { presented: [{ path: "/tmp/output.jpg", seq: 2 }] },
   } } });
   const media = galleryMedia(rendered);
-  assert.deepEqual(media.map(item => item.type), ["video"]);
-  assert.equal(new URL(media[0].src, "https://fixture.invalid").searchParams.get("rev"), "5");
+  assert.deepEqual(media.map(item => item.type), ["img", "video"]);
+  assert.equal(new URL(media[1].src, "https://fixture.invalid").searchParams.get("path"), "/tmp/clip.mp4");
+});
+
+test("client preserves presented video preview alongside its official card", () => {
+  const state = replay(reducers.client, [
+    ...events("shengcheng", {}, false, "saved /tmp/clip.mp4"),
+    { type: "deliverables/presented", seq: 3, data: { turn: 1, files: [{ path: "/tmp/clip.mp4" }] } },
+  ]);
+  const media = galleryMedia(Gallery({ seq: 4, turn: { data: {
+    zhanshi: state, deliverables: { presented: [{ path: "/tmp/clip.mp4", seq: 3 }] },
+  } } }));
+  assert.equal(media.length, 1);
+  assert.equal(media[0].type, "video");
+  assert.equal(new URL(media[0].src, "https://fixture.invalid").searchParams.get("path"), "/tmp/clip.mp4");
 });
